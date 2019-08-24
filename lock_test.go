@@ -24,13 +24,25 @@ func TestBasic(t *testing.T) {
 		t.Errorf("expected no nil, but got %v", err)
 	}
 
-	cancel()
-	if err := km.Lock(ctx, key1); err != context.Canceled {
-		t.Errorf("expected cancel error, but got %v", err)
-	}
+	errCh := make(chan error, 1)
+	go func() {
+		defer close(errCh)
+		errCh <- km.Lock(ctx, key1)
+	}()
 
-	km.Unlock(key1)
+	cancel()
+	// broadcast to awake the queue waiter
 	km.Unlock(key2)
+
+	select {
+	case <-time.After(time.Second):
+		t.Errorf("should got error in second")
+	case err := <-errCh:
+		if err != context.Canceled {
+			t.Errorf("expected cancel error, but got %v", err)
+		}
+	}
+	km.Unlock(key1)
 }
 
 func TestMultiKeyWaitShouldLockAfterWake(t *testing.T) {
@@ -114,4 +126,43 @@ func TestMultiKeyWaitShouldLockAfterWake(t *testing.T) {
 			t.Errorf("expected key(%v) is locked, but got nothing", k)
 		}
 	}
+}
+
+func TestShouldLockAgainIfCancel(t *testing.T) {
+	km := NewKMutex()
+
+	key := t.Name()
+	if err := km.Lock(context.TODO(), key); err != nil {
+		t.Errorf("expected no nil, but got %v", err)
+	}
+
+	waitCh := make(chan struct{})
+	km.waitHook = func(_ string) {
+		close(waitCh)
+	}
+
+	errCh := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Millisecond)
+	go func() {
+		defer close(errCh)
+		errCh <- km.Lock(ctx, key)
+	}()
+
+	<-waitCh
+	cancel()
+	km.Unlock(key)
+
+	if err := <-errCh; err != context.Canceled {
+		t.Errorf("expected cancel error, but got %v", err)
+	}
+
+	if _, ok := km.keys[key]; ok {
+		t.Errorf("expected no lock %s after cancel, but still lock", key)
+	}
+
+	// lock again
+	if err := km.Lock(context.TODO(), key); err != nil {
+		t.Errorf("expected no nil, but got %v", err)
+	}
+	km.Unlock(key)
 }
