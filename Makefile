@@ -1,5 +1,5 @@
 test: 
-	go test -v ./.
+	go test -race -v ./.
 
 proto:
 	protoc -I=./examples/proto \
